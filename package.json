@@ -1,0 +1,12 @@
+{
+  "name": "js-mini-games-portfolio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Plain JavaScript scratch card, prize spinner, and quiz portfolio demo",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
