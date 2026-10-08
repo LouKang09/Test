@@ -7,7 +7,7 @@ android {
     namespace = "com.tracker.offline"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.tracker.offline"
+        applicationId = "com.tracker.offline.beta"
         minSdk = 31
         targetSdk = 35
         versionCode = 2
