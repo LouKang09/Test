@@ -4,119 +4,462 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+
+private val Navy=Color(0xFF0A1423)
+private val Panel=Color(0xFF142339)
+private val Panel2=Color(0xFF1B2D47)
+private val Mint=Color(0xFF87F4D0)
+private val Indigo=Color(0xFF8EAAFC)
+private val Soft=Color(0xFF9AADC5)
+private val Peach=Color(0xFFFFC08E)
+private val White=Color(0xFFF0F5FF)
+private val Coral=Color(0xFFFF8C88)
+private val BudgetBlue=Color(0xFF5A88E8)
+
+private val trackerColors=darkColorScheme(
+    primary=Mint,onPrimary=Navy,secondary=Indigo,
+    background=Navy,onBackground=White,
+    surface=Panel,onSurface=White,
+    surfaceVariant=Panel2,onSurfaceVariant=Soft,
+    outline=Color(0xFF354861),error=Coral
+)
 
 class MainActivity:ComponentActivity() {
     private lateinit var store:ExpenseStore
-    private var recognizer:SpeechRecognizer?=null
-    private val permissions=registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    private val requestMic=registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if(result[Manifest.permission.RECORD_AUDIO]==true) startVoice()
+        else TrackerEvents.voiceStatus.value="Microphone permission required for Hey Tracker"
+    }
+    private fun hasMic():Boolean =
+        ContextCompat.checkSelfPermission(this,Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED
+    private fun startVoice() {
+        if(!getSharedPreferences("tracker",MODE_PRIVATE).getBoolean("voice_enabled",true))return
+        if(!hasMic())return
+        try {
+            ContextCompat.startForegroundService(this,Intent(this,WakeService::class.java))
+            TrackerEvents.voiceStatus.value="Starting offline listener…"
+        } catch(e:Exception) { TrackerEvents.voiceStatus.value="Can't start microphone: "+(e.message ?: "restricted by Android") }
+    }
+    private fun voiceEnabled(enabled:Boolean) {
+        getSharedPreferences("tracker",MODE_PRIVATE).edit().putBoolean("voice_enabled",enabled).apply()
+        if(!enabled) {
+            stopService(Intent(this,WakeService::class.java))
+            TrackerEvents.voiceStatus.value="Voice listener disabled"
+        } else if(hasMic()) startVoice()
+        else requestMic.launch(arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS))
+    }
     override fun onCreate(savedInstanceState:Bundle?) {
-        super.onCreate(savedInstanceState); store=ExpenseStore(this)
-        setContent { TrackerScreen() }
-    }
-    private fun listen(onResult:(String)->Unit,onError:(String)->Unit) {
-        if(ContextCompat.checkSelfPermission(this,Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){ permissions.launch(arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS));onError("Grant microphone permission, then try again.");return }
-        if(!SpeechRecognizer.isOnDeviceRecognitionAvailable(this)){onError("On-device speech recognizer is missing. Install an offline speech model on this phone.");return}
-        recognizer?.destroy()
-        recognizer=SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
-        recognizer?.setRecognitionListener(object:RecognitionListener{
-            override fun onReadyForSpeech(p0:Bundle?){};override fun onBeginningOfSpeech(){};override fun onRmsChanged(p0:Float){};override fun onBufferReceived(p0:ByteArray?){};override fun onEndOfSpeech(){};override fun onPartialResults(p0:Bundle?){};override fun onEvent(p0:Int,p1:Bundle?){}
-            override fun onError(error:Int){onError("Offline speech recognition error: $error")}
-            override fun onResults(results:Bundle?) { val text=results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull(); if(text!=null)onResult(text)else onError("No command recognized.") }
-        })
-        recognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE,true)})
-    }
-    override fun onDestroy(){recognizer?.destroy();store.close();super.onDestroy()}
-
-    @Composable private fun TrackerScreen(){
-        val prefs=remember { getSharedPreferences("tracker",MODE_PRIVATE) }
-        var expenses by remember { mutableStateOf(store.all()) }
-        var budgetText by remember { mutableStateOf(prefs.getInt("budget",1000).toString()) }
-        var thresholdText by remember { mutableStateOf(prefs.getInt("threshold",300).toString()) }
-        var input by remember { mutableStateOf("") }
-        var status by remember { mutableStateOf("Try: I bought Coke for 45 pesos") }
-        var pending by remember { mutableStateOf<ParsedExpense?>(null) }
-        var editing by remember { mutableStateOf<Expense?>(null) }
-        var accessKey by remember { mutableStateOf(prefs.getString("porcupine_key","").orEmpty()) }
-        val budget=budgetText.toIntOrNull()?.coerceAtLeast(0)?:0
-        val threshold=thresholdText.toIntOrNull()?.coerceAtLeast(0)?:0
-        val spent=BudgetLogic.spentToday(expenses)
-        val left=budget-spent
-        fun reload(){expenses=store.all()}
-        MaterialTheme {
-            Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp)) {
-                Text("Tracker",style=MaterialTheme.typography.headlineLarge)
-                Text("Offline expense assistant · Version 0.1",style=MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(12.dp))
-                LazyColumn(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                    item {
-                        Card { Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                            Text("Today's budget",style=MaterialTheme.typography.titleMedium)
-                            Text("₱${left} remaining",style=MaterialTheme.typography.headlineMedium,color=if(left<=threshold)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-                            Text("₱$spent spent / ₱$budget budget")
-                            LinearProgressIndicator(progress={ if(budget>0)(spent.toFloat()/budget).coerceIn(0f,1f) else 0f },modifier=Modifier.fillMaxWidth())
-                            if(left<=threshold) Text("⚠ Budget warning: only ₱$left remains. Review optional purchases.",color=MaterialTheme.colorScheme.error)
-                        } }
-                    }
-                    item {
-                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(budgetText,{budgetText=it.filter(Char::isDigit);prefs.edit().putInt("budget",budgetText.toIntOrNull()?:0).apply()},label={Text("Daily budget ₱")},modifier=Modifier.weight(1f),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
-                            OutlinedTextField(thresholdText,{thresholdText=it.filter(Char::isDigit);prefs.edit().putInt("threshold",thresholdText.toIntOrNull()?:0).apply()},label={Text("Warn at ₱")},modifier=Modifier.weight(1f),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
-                        }
-                    }
-                    item {
-                        OutlinedTextField(input,{input=it},label={Text("Describe an expense")},modifier=Modifier.fillMaxWidth())
-                        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                            Button(onClick={pending=CommandParser.parse(input);if(pending==null)status="Couldn't find a valid peso amount."}){Text("Interpret")}
-                            OutlinedButton(onClick={listen(onResult={input=it;pending=CommandParser.parse(it);status="Heard: $it"},onError={status=it})}) {Text("🎤 Speak")}
-                        }
-                        Text(status,style=MaterialTheme.typography.bodySmall)
-                    }
-                    item {
-                        Card {Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                            Text("Always-ready wake word (experimental)",style=MaterialTheme.typography.titleMedium)
-                            Text("Requires your own Picovoice AccessKey and an Android hey_tracker.ppn model in app/src/main/assets. Start while this screen is visible.",style=MaterialTheme.typography.bodySmall)
-                            OutlinedTextField(accessKey,{accessKey=it},label={Text("Picovoice access key")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-                            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                Button(onClick={
-                                    prefs.edit().putString("porcupine_key",accessKey).apply()
-                                    if(ContextCompat.checkSelfPermission(this@MainActivity,Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED) {
-                                        try { ContextCompat.startForegroundService(this@MainActivity,Intent(this@MainActivity,WakeService::class.java));status="Wake service starting (check Android notification)." } catch(e:Exception){status="Could not start: ${e.message}"}
-                                    } else { permissions.launch(arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS));status="Grant permission and tap Start again." }
-                                }) {Text("Start wake service")}
-                                OutlinedButton(onClick={stopService(Intent(this@MainActivity,WakeService::class.java))}){Text("Stop")}
-                            }
-                        }}
-                    }
-                    item {Text("Last 7 days: ₱${BudgetLogic.week(expenses).sumOf{it.amount}}",style=MaterialTheme.typography.titleMedium);Text(BudgetLogic.tip(BudgetLogic.week(expenses))) }
-                    item {Text("Expense history",style=MaterialTheme.typography.titleLarge)}
-                    items(expenses,key={it.id}) { e -> Card {Row(Modifier.fillMaxWidth().padding(12.dp),horizontalArrangement=Arrangement.SpaceBetween) {
-                        Column(Modifier.weight(1f)){Text("${e.item} · ${e.category}");Text(e.day,style=MaterialTheme.typography.bodySmall)}
-                        Text("₱${e.amount}"); TextButton(onClick={editing=e}){Text("Edit")}
-                    }} }
-                }
-            }
-            if(pending!=null) { val v=pending!!; AlertDialog(onDismissRequest={pending=null},title={Text("Confirm expense")},text={Text("Save ₱${v.amount} · ${v.category} · ${v.item}?")},confirmButton={TextButton(onClick={store.add(v.amount,v.category,v.item);reload();pending=null;input="";status="Saved offline."}){Text("Save")}},dismissButton={TextButton(onClick={pending=null}){Text("Cancel")}}) }
-            if(editing!=null){val e=editing!!;var amount by remember(e.id){mutableStateOf(e.amount.toString())};var category by remember(e.id){mutableStateOf(e.category)};var item by remember(e.id){mutableStateOf(e.item)}
-                AlertDialog(onDismissRequest={editing=null},title={Text("Edit expense")},text={Column {OutlinedTextField(amount,{amount=it.filter(Char::isDigit)},label={Text("Amount")});OutlinedTextField(category,{category=it},label={Text("Category")});OutlinedTextField(item,{item=it},label={Text("Item")})}},confirmButton={TextButton(enabled=(amount.toIntOrNull()?:0)>0 && category.isNotBlank(),onClick={store.update(e.id,amount.toInt(),category,item);reload();editing=null}){Text("Save")}},dismissButton={Row {TextButton(onClick={store.delete(e.id);reload();editing=null}){Text("Delete")};TextButton(onClick={editing=null}){Text("Cancel")}}})
+        super.onCreate(savedInstanceState)
+        store=ExpenseStore(this)
+        setContent {
+            MaterialTheme(colorScheme=trackerColors) {
+                TrackerApp(store=store,prefsBudget={getSharedPreferences("tracker",MODE_PRIVATE).getInt("budget",1000)},
+                    prefsThreshold={getSharedPreferences("tracker",MODE_PRIVATE).getInt("threshold",300)},
+                    saveBudgets={budget,threshold->
+                        getSharedPreferences("tracker",MODE_PRIVATE).edit().putInt("budget",budget).putInt("threshold",threshold).apply()
+                    }, enabledPref={getSharedPreferences("tracker",MODE_PRIVATE).getBoolean("voice_enabled",true)},
+                    toggleVoice={voiceEnabled(it)})
             }
         }
+        if(getSharedPreferences("tracker",MODE_PRIVATE).getBoolean("voice_enabled",true)) {
+            if(hasMic()) startVoice()
+            else requestMic.launch(arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS))
+        }
+    }
+    override fun onDestroy() { store.close();super.onDestroy() }
+}
+
+private fun peso(n:Int):String = "₱"+String.format("%,d",n)
+private fun categoryColor(name:String):Color = when(name) {
+    "Food"->Peach
+    "Transportation"->Mint
+    "Bills"->Indigo
+    "Shopping"->Color(0xFFD4A5F8)
+    "Health"->Coral
+    else->Color(0xFF79C3FA)
+}
+private fun categoryIcon(name:String):String = when(name) {
+    "Food"->"🍜"
+    "Transportation"->"🚕"
+    "Bills"->"🧾"
+    "Shopping"->"🛍"
+    "Health"->"💊"
+    else->"💸"
+}
+@Composable private fun RoundedPanel(modifier:Modifier=Modifier,content:@Composable ColumnScope.()->Unit) {
+    Column(modifier.background(Panel,RoundedCornerShape(24.dp)).padding(18.dp),content=content)
+}
+@Composable private fun SmallTitle(text:String,action:String?=null,onAction:(()->Unit)?=null) {
+    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
+        Text(text,color=White,fontSize=18.sp,fontWeight=FontWeight.Bold)
+        if(action!=null && onAction!=null) Text(action,Modifier.clickable { onAction() },color=Mint,fontSize=13.sp,fontWeight=FontWeight.SemiBold)
+    }
+}
+@Composable private fun Metric(label:String,value:String,accent:Color,modifier:Modifier=Modifier,sub:String="") {
+    RoundedPanel(modifier) {
+        Box(Modifier.size(32.dp).background(accent.copy(alpha=.13f),RoundedCornerShape(10.dp)),contentAlignment=Alignment.Center) {
+            Text("●",color=accent,fontSize=18.sp)
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(value,fontSize=23.sp,color=White,fontWeight=FontWeight.Bold,maxLines=1)
+        Text(label,color=Soft,fontSize=12.sp)
+        if(sub.isNotBlank())Text(sub,color=accent,fontSize=11.sp)
+    }
+}
+@Composable private fun DonutChart(spend:Map<String,Int>,modifier:Modifier=Modifier) {
+    val total=spend.values.sum().coerceAtLeast(1)
+    Box(modifier,contentAlignment=Alignment.Center) {
+        Canvas(Modifier.size(134.dp)) {
+            val w=17.dp.toPx()
+            drawArc(Panel2,-90f,360f,false,style=Stroke(w,cap=StrokeCap.Round))
+            var start=-90f
+            spend.forEach { (name,value)->
+                val angle=360f*value/total
+                if(angle>0.5f) drawArc(categoryColor(name),start, (angle-2.5f).coerceAtLeast(.5f),false,style=Stroke(w,cap=StrokeCap.Round))
+                start+=angle
+            }
+        }
+        Column(horizontalAlignment=Alignment.CenterHorizontally) {
+            Text(peso(spend.values.sum()),color=White,fontSize=17.sp,fontWeight=FontWeight.Bold)
+            Text("7-day total",color=Soft,fontSize=10.sp)
+        }
+    }
+}
+@Composable private fun TransactionRow(e:Expense,onClick:()->Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).clickable { onClick() }.padding(vertical=9.dp),
+        horizontalArrangement=Arrangement.spacedBy(12.dp),verticalAlignment=Alignment.CenterVertically) {
+        Box(Modifier.size(46.dp).background(categoryColor(e.category).copy(alpha=.14f),RoundedCornerShape(14.dp)),contentAlignment=Alignment.Center) {
+            Text(categoryIcon(e.category),fontSize=21.sp)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(e.item,color=White,fontWeight=FontWeight.SemiBold,fontSize=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+            Text(e.category+" · "+e.day,color=Soft,fontSize=11.sp)
+        }
+        Text("-"+peso(e.amount),color=White,fontWeight=FontWeight.SemiBold,fontSize=14.sp)
+    }
+}
+@Composable private fun TrackerApp(
+    store:ExpenseStore,
+    prefsBudget:()->Int,
+    prefsThreshold:()->Int,
+    saveBudgets:(Int,Int)->Unit,
+    enabledPref:()->Boolean,
+    toggleVoice:(Boolean)->Unit
+) {
+    var tab by remember { mutableIntStateOf(0) }
+    var budget by remember { mutableIntStateOf(prefsBudget()) }
+    var threshold by remember { mutableIntStateOf(prefsThreshold()) }
+    var voiceEnabled by remember { mutableStateOf(enabledPref()) }
+    var showAdd by remember { mutableStateOf(false) }
+    var editExpense by remember { mutableStateOf<Expense?>(null) }
+    var changeBudget by remember { mutableStateOf(false) }
+    var search by remember { mutableStateOf("") }
+    val revision=TrackerEvents.revision.intValue
+    val all=remember(revision) { store.all() }
+    val today=BudgetLogic.spentToday(all)
+    val left=budget-today
+    val week=BudgetLogic.week(all)
+    val weekTotal=week.sumOf{it.amount}
+    val byCategory=week.groupBy { it.category }.mapValues { it.value.sumOf { e->e.amount } }.toList().sortedByDescending { it.second }.toMap()
+    val voiceStatus=TrackerEvents.voiceStatus.value
+    val lastHeard=TrackerEvents.heard.value
+    val greeting=when(LocalTime.now().hour) {in 5..11->"GOOD MORNING";in 12..17->"GOOD AFTERNOON";else->"GOOD EVENING"}
+    Column(Modifier.fillMaxSize().background(Navy)) {
+        Row(Modifier.fillMaxWidth().padding(start=20.dp,end=20.dp,top=21.dp,bottom=15.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(42.dp).background(Mint,RoundedCornerShape(14.dp)),contentAlignment=Alignment.Center) {
+                    Text("✦",fontSize=24.sp,color=Navy)
+                }
+                Column {
+                    Text("TRACKER",fontSize=19.sp,fontWeight=FontWeight.ExtraBold,color=White,letterSpacing=1.sp)
+                    Text("Your offline money companion",fontSize=10.sp,color=Soft)
+                }
+            }
+            Box(Modifier.size(38.dp).background(Panel2,CircleShape).clickable { tab=3 },contentAlignment=Alignment.Center) {
+                Text("⚙",fontSize=21.sp,color=White)
+            }
+        }
+        LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(start=18.dp,end=18.dp,bottom=22.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+            if(tab==0) {
+                item {
+                    Text(greeting,color=Soft,fontSize=11.sp,fontWeight=FontWeight.SemiBold,letterSpacing=1.5.sp)
+                    Text("Your money, in focus.",color=White,fontSize=25.sp,fontWeight=FontWeight.Bold)
+                    Text(LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, MMM d")),color=Soft,fontSize=12.sp)
+                }
+                item {
+                    Column(Modifier.fillMaxWidth().background(Panel2,RoundedCornerShape(24.dp)).padding(20.dp)) {
+                        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+                            Text("AVAILABLE TODAY",fontSize=12.sp,fontWeight=FontWeight.Bold,color=Soft,letterSpacing=1.sp)
+                            Text("Edit ↗",Modifier.clickable {changeBudget=true},fontSize=12.sp,color=Mint)
+                        }
+                        Spacer(Modifier.height(9.dp))
+                        Text(peso(left),color=if(left<=threshold)Peach else Mint,fontSize=39.sp,fontWeight=FontWeight.ExtraBold)
+                        Text("remaining from your "+peso(budget)+" budget",fontSize=12.sp,color=Soft)
+                        Spacer(Modifier.height(20.dp))
+                        LinearProgressIndicator(progress={if(budget>0)(today.toFloat()/budget).coerceIn(0f,1f) else 0f},
+                            modifier=Modifier.fillMaxWidth().height(9.dp).clip(RoundedCornerShape(12.dp)),
+                            color=if(left<=threshold)Peach else Mint,trackColor=Color(0xFF33445B))
+                        Spacer(Modifier.height(10.dp))
+                        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
+                            Text("Spent "+peso(today),fontSize=12.sp,color=White)
+                            Text("Budget "+peso(budget),fontSize=12.sp,color=Soft)
+                        }
+                    }
+                }
+                if(left<=threshold) item {
+                    Row(Modifier.fillMaxWidth().background(Color(0xFF49352B),RoundedCornerShape(18.dp)).padding(15.dp),
+                        horizontalArrangement=Arrangement.spacedBy(12.dp),verticalAlignment=Alignment.CenterVertically) {
+                        Text("⚠",fontSize=24.sp,color=Peach)
+                        Column {
+                            Text(if(left<0)"Daily budget exceeded" else "You're nearing your limit",color=Peach,fontWeight=FontWeight.Bold,fontSize=14.sp)
+                            Text("Only "+peso(left)+" left. Consider cutting back on frequent non-essential purchases.",color=White,fontSize=12.sp)
+                        }
+                    }
+                }
+                item {
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                        Metric("Spent today",peso(today),Peach,Modifier.weight(1f))
+                        Metric("This week",peso(weekTotal),Indigo,Modifier.weight(1f))
+                    }
+                }
+                item {
+                    RoundedPanel {
+                        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
+                            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(9.dp)) {
+                                Text("◉",color=Mint,fontSize=22.sp)
+                                Column {
+                                    Text("Hey Tracker",fontWeight=FontWeight.Bold,color=White,fontSize=16.sp)
+                                    Text(if(voiceEnabled)"Voice assistant is on" else "Voice assistant is off",color=Soft,fontSize=11.sp)
+                                }
+                            }
+                            Switch(checked=voiceEnabled,onCheckedChange={voiceEnabled=it;toggleVoice(it)},colors=SwitchDefaults.colors(checkedThumbColor=Navy,checkedTrackColor=Mint))
+                        }
+                        Spacer(Modifier.height(13.dp))
+                        Text(voiceStatus,color=Mint,fontSize=12.sp)
+                        Spacer(Modifier.height(5.dp))
+                        Text("“"+lastHeard+"”",color=Soft,fontSize=12.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(9.dp))
+                        Text("Try: Hey Tracker, save 55 pesos for transportation",color=White,fontSize=12.sp)
+                    }
+                }
+                item {
+                    RoundedPanel {
+                        SmallTitle("Weekly breakdown","Details →"){tab=2}
+                        Spacer(Modifier.height(14.dp))
+                        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(15.dp)) {
+                            DonutChart(byCategory,Modifier.width(153.dp))
+                            Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                                if(byCategory.isEmpty()) Text("Add an expense to see your spending categories.",color=Soft,fontSize=12.sp)
+                                byCategory.entries.take(5).forEach { (c,n)->
+                                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(7.dp)) {
+                                        Box(Modifier.size(8.dp).background(categoryColor(c),CircleShape))
+                                        Column {
+                                            Text(c,color=Soft,fontSize=11.sp)
+                                            Text(peso(n),color=White,fontSize=12.sp,fontWeight=FontWeight.SemiBold)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                item {
+                    SmallTitle("Recent activity","See all →"){tab=1}
+                    if(all.isEmpty()) Text("No expenses yet. Say Hey Tracker to add your first!",color=Soft,fontSize=13.sp,modifier=Modifier.padding(top=12.dp))
+                }
+                items(all.take(5),key={it.id}){e->TransactionRow(e){editExpense=e}}
+            }
+            if(tab==1) {
+                item {
+                    Text("Expense history",color=White,fontSize=27.sp,fontWeight=FontWeight.Bold)
+                    Text(all.size.toString()+" recorded transactions · all saved offline",color=Soft,fontSize=12.sp)
+                    Spacer(Modifier.height(15.dp))
+                    OutlinedTextField(search,{search=it},Modifier.fillMaxWidth(),label={Text("Search item or category")},singleLine=true,shape=RoundedCornerShape(17.dp))
+                }
+                items(all.filter { it.item.contains(search,true) || it.category.contains(search,true) || it.day.contains(search,true) },key={it.id}) { e->
+                    RoundedPanel { TransactionRow(e){editExpense=e} }
+                }
+                if(all.isEmpty())item {Text("Your transactions will appear here.",color=Soft)}
+            }
+            if(tab==2) {
+                item {
+                    Text("Spending insights",color=White,fontSize=27.sp,fontWeight=FontWeight.Bold)
+                    Text("A clearer view of the past 7 days",color=Soft,fontSize=12.sp)
+                }
+                item {
+                    Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                        Metric("7-day expenses",peso(weekTotal),Peach,Modifier.weight(1f))
+                        Metric("Transactions",week.size.toString(),Indigo,Modifier.weight(1f))
+                    }
+                }
+                item {
+                    RoundedPanel {
+                        SmallTitle("Where your money goes")
+                        Spacer(Modifier.height(16.dp))
+                        Box(Modifier.fillMaxWidth(),contentAlignment=Alignment.Center){DonutChart(byCategory)}
+                        Spacer(Modifier.height(14.dp))
+                        byCategory.forEach { (category,amount)->
+                            Row(Modifier.fillMaxWidth().padding(vertical=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
+                                Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                                    Box(Modifier.size(10.dp).background(categoryColor(category),CircleShape))
+                                    Text(category,color=White,fontSize=13.sp)
+                                }
+                                Text(peso(amount),color=Soft,fontSize=13.sp,fontWeight=FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
+                item {
+                    RoundedPanel {
+                        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(9.dp)) {
+                            Text("✦",color=Mint,fontSize=23.sp)
+                            Text("Smart saving tip",color=White,fontSize=17.sp,fontWeight=FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Text(BudgetLogic.tip(week),color=Soft,fontSize=13.sp)
+                    }
+                }
+            }
+            if(tab==3) {
+                item {
+                    Text("Settings",color=White,fontSize=27.sp,fontWeight=FontWeight.Bold)
+                    Text("Personalize your money companion",color=Soft,fontSize=12.sp)
+                }
+                item {
+                    RoundedPanel {
+                        SmallTitle("Your daily budget")
+                        Spacer(Modifier.height(13.dp))
+                        Text(peso(budget),color=Mint,fontWeight=FontWeight.Bold,fontSize=31.sp)
+                        Text("Alert when balance reaches "+peso(threshold),color=Soft,fontSize=13.sp)
+                        Spacer(Modifier.height(12.dp))
+                        Button(onClick={changeBudget=true},colors=ButtonDefaults.buttonColors(containerColor=Mint),shape=RoundedCornerShape(13.dp)) {
+                            Text("Edit budget and threshold",color=Navy,fontWeight=FontWeight.Bold)
+                        }
+                    }
+                }
+                item {
+                    RoundedPanel {
+                        SmallTitle("Voice activation")
+                        Spacer(Modifier.height(12.dp))
+                        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Always-ready Hey Tracker",color=White,fontWeight=FontWeight.SemiBold,fontSize=14.sp)
+                                Text("Uses a local English speech model. May stop if Android restricts the microphone.",color=Soft,fontSize=12.sp)
+                            }
+                            Switch(checked=voiceEnabled,onCheckedChange={voiceEnabled=it;toggleVoice(it)},colors=SwitchDefaults.colors(checkedThumbColor=Navy,checkedTrackColor=Mint))
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text(voiceStatus,color=Mint,fontSize=12.sp)
+                    }
+                }
+                item {
+                    RoundedPanel {
+                        SmallTitle("Privacy & storage")
+                        Spacer(Modifier.height(8.dp))
+                        Text("All expenses are saved in the phone's private SQLite database. No login, cloud account, or internet connection is required for everyday use.",color=Soft,fontSize=13.sp)
+                        Spacer(Modifier.height(9.dp))
+                        Text("Version 0.2 · Offline voice beta",color=Indigo,fontSize=12.sp)
+                    }
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().padding(horizontal=18.dp).padding(bottom=9.dp),contentAlignment=Alignment.CenterEnd) {
+            Button(onClick={showAdd=true},shape=RoundedCornerShape(18.dp),colors=ButtonDefaults.buttonColors(containerColor=Mint),contentPadding=PaddingValues(horizontal=22.dp,vertical=14.dp)) {
+                Text("＋ Add expense",color=Navy,fontWeight=FontWeight.Bold)
+            }
+        }
+        NavigationBar(containerColor=Panel,tonalElevation=0.dp) {
+            listOf("Home","History","Insights","Settings").forEachIndexed { i,name ->
+                NavigationBarItem(selected=tab==i,onClick={tab=i},icon={
+                    Text(listOf("⌂","▤","◔","⚙")[i],fontSize=24.sp,color=if(tab==i)Navy else Soft)
+                },label={Text(name,fontSize=10.sp)},colors=NavigationBarItemDefaults.colors(selectedIconColor=Navy,selectedTextColor=Mint,indicatorColor=Mint,unselectedIconColor=Soft,unselectedTextColor=Soft))
+            }
+        }
+    }
+    if(showAdd) {
+        var prompt by remember {mutableStateOf("")}
+        val parsed=CommandParser.parse(prompt)
+        AlertDialog(
+            onDismissRequest={showAdd=false},
+            title={Text("Add an expense")},
+            text={
+                Column {
+                    Text("Describe your purchase",color=Soft,fontSize=13.sp)
+                    Spacer(Modifier.height(9.dp))
+                    OutlinedTextField(prompt,{prompt=it},label={Text("e.g. Snacks 235 pesos")},modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(12.dp))
+                    Spacer(Modifier.height(11.dp))
+                    Text(if(parsed!=null) peso(parsed.amount)+" · "+parsed.category+" · "+parsed.item else "Enter an amount and an item.",color=if(parsed!=null)Mint else Soft,fontSize=12.sp)
+                }
+            },
+            confirmButton={TextButton(enabled=parsed!=null,onClick={
+                if(parsed!=null) {store.add(parsed.amount,parsed.category,parsed.item);TrackerEvents.saved();showAdd=false}
+            }){Text("Save offline",color=Mint)}},
+            dismissButton={TextButton(onClick={showAdd=false}){Text("Cancel")}},
+            containerColor=Panel2
+        )
+    }
+    if(changeBudget) {
+        var budgetInput by remember {mutableStateOf(budget.toString())}
+        var thresholdInput by remember {mutableStateOf(threshold.toString())}
+        AlertDialog(onDismissRequest={changeBudget=false},title={Text("Daily budget")},
+            text={Column {
+                OutlinedTextField(budgetInput,{budgetInput=it.filter(Char::isDigit)},label={Text("Daily budget ₱")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),singleLine=true)
+                Spacer(Modifier.height(9.dp))
+                OutlinedTextField(thresholdInput,{thresholdInput=it.filter(Char::isDigit)},label={Text("Warning at remaining ₱")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),singleLine=true)
+            }},
+            confirmButton={TextButton(enabled=budgetInput.toIntOrNull()!=null && thresholdInput.toIntOrNull()!=null,onClick={
+                budget=budgetInput.toIntOrNull()?:budget;threshold=thresholdInput.toIntOrNull()?:threshold
+                saveBudgets(budget,threshold);changeBudget=false
+            }){Text("Save",color=Mint)}},
+            dismissButton={TextButton(onClick={changeBudget=false}){Text("Cancel")}},containerColor=Panel2)
+    }
+    if(editExpense!=null) {
+        val e=editExpense!!
+        var a by remember(e.id){mutableStateOf(e.amount.toString())}
+        var c by remember(e.id){mutableStateOf(e.category)}
+        var n by remember(e.id){mutableStateOf(e.item)}
+        AlertDialog(onDismissRequest={editExpense=null},title={Text("Edit transaction")},
+            text={Column(verticalArrangement=Arrangement.spacedBy(9.dp)) {
+                OutlinedTextField(a,{a=it.filter(Char::isDigit)},label={Text("Amount ₱")},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),singleLine=true)
+                OutlinedTextField(n,{n=it},label={Text("Item")},singleLine=true)
+                OutlinedTextField(c,{c=it},label={Text("Category")},singleLine=true)
+            }},
+            confirmButton={TextButton(enabled=(a.toIntOrNull()?:0)>0 && c.isNotBlank(),onClick={
+                store.update(e.id,a.toInt(),c,n);TrackerEvents.saved();editExpense=null
+            }){Text("Save changes",color=Mint)}},
+            dismissButton={Row {
+                TextButton(onClick={store.delete(e.id);TrackerEvents.saved();editExpense=null}){Text("Delete",color=Coral)}
+                TextButton(onClick={editExpense=null}){Text("Cancel")}
+            }},containerColor=Panel2)
     }
 }
