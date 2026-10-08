@@ -1,0 +1,1 @@
+Place your Android custom wake-word model named hey_tracker.ppn here. This is not included in the APK.
