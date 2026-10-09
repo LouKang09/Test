@@ -1,4 +1,4 @@
-name: Build Tracker Offline v0.3 APK
+name: Build Tracker Offline v0.4 APK
 on:
   push:
     branches: [tracker-apk-build]
@@ -23,17 +23,12 @@ jobs:
           gradle-version: '8.9'
       - name: Install Android SDK
         run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
-      - name: Bundle licensed offline English model
-        run: |
-          curl --fail --location --retry 3 https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip -o /tmp/vosk-en.zip
-          unzip -q /tmp/vosk-en.zip -d tracker-android/app/src/main/assets
-          test -s tracker-android/app/src/main/assets/vosk-model-small-en-us-0.15/am/final.mdl
       - name: Assemble signed debug APK
         working-directory: tracker-android
         run: gradle --no-daemon --stacktrace :app:assembleDebug
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: TrackerOffline-v0.3-debug-apk
+          name: TrackerOffline-v0.4-debug-apk
           path: tracker-android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

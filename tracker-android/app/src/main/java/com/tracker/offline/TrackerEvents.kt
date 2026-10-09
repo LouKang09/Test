@@ -14,5 +14,6 @@ object TrackerEvents {
     val micActive = mutableStateOf(false)
     val lastAudioMs = mutableLongStateOf(0L)
     val error = mutableStateOf("")
+    val configRevision = mutableIntStateOf(0)
     fun saved() { revision.intValue += 1 }
 }

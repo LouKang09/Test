@@ -7,11 +7,11 @@ android {
     namespace = "com.tracker.offline"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.tracker.offline.voicebeta"
+        applicationId = "com.tracker.offline.hybridbeta"
         minSdk = 31
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
     }
     buildFeatures { compose = true }
     compileOptions {
@@ -28,5 +28,5 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("com.alphacephei:vosk-android:0.3.47")
+    implementation("ai.picovoice:porcupine-android:4.0.2")
 }

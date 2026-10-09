@@ -4,6 +4,10 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.content.Context
+import java.io.File
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -56,6 +60,33 @@ private val trackerColors=darkColorScheme(
 
 class MainActivity:ComponentActivity() {
     private lateinit var store:ExpenseStore
+    private val pickWakeModel=registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if(uri!=null) {
+            val model=File(filesDir,"hey_tracker_android.ppn")
+            try {
+                var count=0
+                contentResolver.openInputStream(uri)?.use {input ->
+                    model.outputStream().use {output ->
+                        val buf=ByteArray(8192)
+                        while(true){
+                            val n=input.read(buf)
+                            if(n<0)break
+                            count+=n
+                            if(count>5_000_000)throw IllegalStateException("File exceeds 5 MB")
+                            output.write(buf,0,n)
+                        }
+                    }
+                } ?: throw IllegalStateException("Could not open model")
+                if(count<1024)throw IllegalStateException("Model file too small")
+                TrackerEvents.configRevision.intValue++
+                TrackerEvents.voiceStatus.value="Hey Tracker model imported"
+                stopService(Intent(this,WakeService::class.java))
+            }catch(e:Exception){
+                model.delete()
+                TrackerEvents.voiceStatus.value="Model import failed: "+e.message
+            }
+        }
+    }
     private val requestMic=registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if(result[Manifest.permission.RECORD_AUDIO]==true) startVoice()
         else TrackerEvents.voiceStatus.value="Microphone permission required for Hey Tracker"
@@ -78,6 +109,16 @@ class MainActivity:ComponentActivity() {
         } else if(hasMic()) startVoice()
         else requestMic.launch(arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS))
     }
+    private fun testOnlineVoice(){
+        if(!hasMic()){
+            requestMic.launch(arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS))
+            return
+        }
+        getSharedPreferences("tracker",MODE_PRIVATE).edit().putBoolean("voice_enabled",true).apply()
+        try{
+            ContextCompat.startForegroundService(this,Intent(this,WakeService::class.java).setAction("TEST"))
+        }catch(e:Exception){TrackerEvents.voiceStatus.value="Speech test error: "+e.message}
+    }
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
         store=ExpenseStore(this)
@@ -88,7 +129,7 @@ class MainActivity:ComponentActivity() {
                     saveBudgets={budget,threshold->
                         getSharedPreferences("tracker",MODE_PRIVATE).edit().putInt("budget",budget).putInt("threshold",threshold).apply()
                     }, enabledPref={getSharedPreferences("tracker",MODE_PRIVATE).getBoolean("voice_enabled",true)},
-                    toggleVoice={voiceEnabled(it)})
+                    toggleVoice={voiceEnabled(it)}, importWakeModel={pickWakeModel.launch(arrayOf("*/*"))}, testVoice={testOnlineVoice()})
             }
         }
         if(getSharedPreferences("tracker",MODE_PRIVATE).getBoolean("voice_enabled",true)) {
@@ -174,12 +215,22 @@ private fun categoryIcon(name:String):String = when(name) {
     prefsThreshold:()->Int,
     saveBudgets:(Int,Int)->Unit,
     enabledPref:()->Boolean,
-    toggleVoice:(Boolean)->Unit
+    toggleVoice:(Boolean)->Unit,
+    importWakeModel:()->Unit,
+    testVoice:()->Unit
 ) {
     var tab by remember { mutableIntStateOf(0) }
     var budget by remember { mutableIntStateOf(prefsBudget()) }
     var threshold by remember { mutableIntStateOf(prefsThreshold()) }
     var voiceEnabled by remember { mutableStateOf(enabledPref()) }
+    val appContext=LocalContext.current
+    val p=remember {appContext.getSharedPreferences("tracker",Context.MODE_PRIVATE)}
+    val configRevision=TrackerEvents.configRevision.intValue
+    val modelReady=remember(configRevision) { File(appContext.filesDir,"hey_tracker_android.ppn").isFile }
+    var accessKey by remember { mutableStateOf(p.getString("picovoice_key","").orEmpty()) }
+    var locale by remember { mutableStateOf(p.getString("speech_locale","en-PH").orEmpty()) }
+    var apiUrl by remember { mutableStateOf(p.getString("tracker_api","").orEmpty()) }
+    var apiToken by remember { mutableStateOf(p.getString("tracker_token","").orEmpty()) }
     var showAdd by remember { mutableStateOf(false) }
     var editExpense by remember { mutableStateOf<Expense?>(null) }
     var changeBudget by remember { mutableStateOf(false) }
@@ -273,7 +324,7 @@ private fun categoryIcon(name:String):String = when(name) {
                         Text(if(micActive) "● Audio recording confirmed" else "○ Waiting for microphone",color=if(micActive) Mint else Peach,fontSize=12.sp,fontWeight=FontWeight.Bold)
                         Spacer(Modifier.height(7.dp))
                         LinearProgressIndicator(progress={micLevel/100f},modifier=Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(8.dp)),color=Mint,trackColor=Color(0xFF33445B))
-                        Text("Live microphone level: "+micLevel+"%",color=Soft,fontSize=11.sp)
+                        Text("Speech-command level: "+micLevel+"%",color=Soft,fontSize=11.sp)
                         Text(voiceStatus,color=Mint,fontSize=12.sp)
                         if(voiceError.isNotEmpty()) Text(voiceError,color=Coral,fontSize=12.sp)
                         Text("Wake detector: "+wakePreview,color=Soft,fontSize=11.sp,maxLines=2)
@@ -384,7 +435,7 @@ private fun categoryIcon(name:String):String = when(name) {
                         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
                             Column(Modifier.weight(1f)) {
                                 Text("Always-ready Hey Tracker",color=White,fontWeight=FontWeight.SemiBold,fontSize=14.sp)
-                                Text("Uses a local English speech model. May stop if Android restricts the microphone.",color=Soft,fontSize=12.sp)
+                                Text("Uses Picovoice for offline wake detection and Android's speech recognition service for spoken commands.",color=Soft,fontSize=12.sp)
                             }
                             Switch(checked=voiceEnabled,onCheckedChange={voiceEnabled=it;toggleVoice(it)},colors=SwitchDefaults.colors(checkedThumbColor=Navy,checkedTrackColor=Mint))
                         }
@@ -403,11 +454,55 @@ private fun categoryIcon(name:String):String = when(name) {
                 }
                 item {
                     RoundedPanel {
+                        SmallTitle("Wake phrase setup")
+                        Spacer(Modifier.height(8.dp))
+                        Text("To hear Hey Tracker without tapping, generate a custom Android .ppn file for Hey Tracker at console.picovoice.ai and get your Picovoice AccessKey.",color=Soft,fontSize=12.sp)
+                        OutlinedTextField(accessKey,{accessKey=it},label={Text("Picovoice AccessKey")},modifier=Modifier.fillMaxWidth(),singleLine=true,visualTransformation=PasswordVisualTransformation())
+                        Spacer(Modifier.height(8.dp))
+                        Text(if(modelReady)"✓ Wake-word model imported" else "No Android Hey Tracker .ppn imported",color=if(modelReady) Mint else Peach,fontSize=12.sp)
+                        OutlinedButton(onClick={importWakeModel()}){Text("Import Android .ppn model",color=Mint)}
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(locale,{locale=it},label={Text("Speech language: en-PH, fil-PH, en-US")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick={
+                            p.edit().putString("picovoice_key",accessKey.trim())
+                                .putString("speech_locale",locale.trim().ifBlank{"en-PH"}).apply()
+                            appContext.stopService(Intent(appContext,WakeService::class.java))
+                            voiceEnabled=true
+                            toggleVoice(true)
+                        },colors=ButtonDefaults.buttonColors(containerColor=Mint)){
+                            Text("Save and enable Hey Tracker",color=Navy)
+                        }
+                    }
+                }
+                item {
+                    RoundedPanel {
+                        SmallTitle("Test online voice")
+                        Text("Use Android's network-capable speech recognizer without setting up the wake phrase.",color=Soft,fontSize=12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick={testVoice()}){Text("Test Online Voice",color=Mint)}
+                    }
+                }
+                item {
+                    RoundedPanel {
+                        SmallTitle("Optional cloud AI endpoint")
+                        Text("Enter a secure Railway server URL and app token to improve Taglish expense understanding. The OpenAI API key stays on the server, never in this APK.",color=Soft,fontSize=12.sp)
+                        OutlinedTextField(apiUrl,{apiUrl=it},label={Text("Backend HTTPS URL")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                        OutlinedTextField(apiToken,{apiToken=it},label={Text("Backend client token")},modifier=Modifier.fillMaxWidth(),singleLine=true,visualTransformation=PasswordVisualTransformation())
+                        OutlinedButton(onClick={
+                            p.edit().putString("tracker_api",apiUrl.trim())
+                                .putString("tracker_token",apiToken.trim()).apply()
+                            TrackerEvents.voiceStatus.value="Backend connection settings saved"
+                        }){Text("Save connection",color=Mint)}
+                    }
+                }
+                item {
+                    RoundedPanel {
                         SmallTitle("Privacy & storage")
                         Spacer(Modifier.height(8.dp))
                         Text("All expenses are saved in the phone's private SQLite database. No login, cloud account, or internet connection is required for everyday use.",color=Soft,fontSize=13.sp)
                         Spacer(Modifier.height(9.dp))
-                        Text("Version 0.3 · Voice diagnostics",color=Indigo,fontSize=12.sp)
+                        Text("Version 0.4 · Hybrid voice beta",color=Indigo,fontSize=12.sp)
                     }
                 }
             }
