@@ -7,11 +7,11 @@ android {
     namespace = "com.tracker.offline"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.tracker.offline.beta"
+        applicationId = "com.tracker.offline.voicebeta"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
     buildFeatures { compose = true }
     compileOptions {

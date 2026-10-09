@@ -193,6 +193,11 @@ private fun categoryIcon(name:String):String = when(name) {
     val byCategory=week.groupBy { it.category }.mapValues { it.value.sumOf { e->e.amount } }.toList().sortedByDescending { it.second }.toMap()
     val voiceStatus=TrackerEvents.voiceStatus.value
     val lastHeard=TrackerEvents.heard.value
+    val micLevel=TrackerEvents.micLevel.intValue
+    val micActive=TrackerEvents.micActive.value
+    val wakePreview=TrackerEvents.wakePreview.value
+    val wakeCount=TrackerEvents.wakeEvents.intValue
+    val voiceError=TrackerEvents.error.value
     val greeting=when(LocalTime.now().hour) {in 5..11->"GOOD MORNING";in 12..17->"GOOD AFTERNOON";else->"GOOD EVENING"}
     Column(Modifier.fillMaxSize().background(Navy)) {
         Row(Modifier.fillMaxWidth().padding(start=20.dp,end=20.dp,top=21.dp,bottom=15.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
@@ -265,11 +270,16 @@ private fun categoryIcon(name:String):String = when(name) {
                             Switch(checked=voiceEnabled,onCheckedChange={voiceEnabled=it;toggleVoice(it)},colors=SwitchDefaults.colors(checkedThumbColor=Navy,checkedTrackColor=Mint))
                         }
                         Spacer(Modifier.height(13.dp))
+                        Text(if(micActive) "● Audio recording confirmed" else "○ Waiting for microphone",color=if(micActive) Mint else Peach,fontSize=12.sp,fontWeight=FontWeight.Bold)
+                        Spacer(Modifier.height(7.dp))
+                        LinearProgressIndicator(progress={micLevel/100f},modifier=Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(8.dp)),color=Mint,trackColor=Color(0xFF33445B))
+                        Text("Live microphone level: "+micLevel+"%",color=Soft,fontSize=11.sp)
                         Text(voiceStatus,color=Mint,fontSize=12.sp)
-                        Spacer(Modifier.height(5.dp))
-                        Text("“"+lastHeard+"”",color=Soft,fontSize=12.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
+                        if(voiceError.isNotEmpty()) Text(voiceError,color=Coral,fontSize=12.sp)
+                        Text("Wake detector: "+wakePreview,color=Soft,fontSize=11.sp,maxLines=2)
+                        Text("Last speech: "+lastHeard,color=Soft,fontSize=11.sp,maxLines=2)
                         Spacer(Modifier.height(9.dp))
-                        Text("Try: Hey Tracker, save 55 pesos for transportation",color=White,fontSize=12.sp)
+                        Text("Say: Hey Tracker, save fifty five pesos for transportation",color=White,fontSize=12.sp)
                     }
                 }
                 item {
@@ -380,6 +390,15 @@ private fun categoryIcon(name:String):String = when(name) {
                         }
                         Spacer(Modifier.height(12.dp))
                         Text(voiceStatus,color=Mint,fontSize=12.sp)
+                        Spacer(Modifier.height(10.dp))
+                        Text(if(micActive) "Actual audio is being received" else "No recorded audio detected",color=if(micActive) Mint else Peach,fontSize=12.sp)
+                        LinearProgressIndicator(progress={micLevel/100f},modifier=Modifier.fillMaxWidth().height(9.dp).clip(RoundedCornerShape(8.dp)),color=Mint,trackColor=Panel2)
+                        Text("Input level: "+micLevel+"% · wake matches: "+wakeCount,color=Soft,fontSize=12.sp)
+                        Text("Wake decoder: "+wakePreview,color=Soft,fontSize=12.sp)
+                        Text("Command heard: "+lastHeard,color=Soft,fontSize=12.sp)
+                        if(voiceError.isNotEmpty()) Text("Problem: "+voiceError,color=Coral,fontSize=12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Test: speak near the phone. If the meter stays at 0%, check Android microphone access and close other recording apps. If the meter moves but the wake count stays at 0, the phrase was not recognized.",color=Soft,fontSize=12.sp)
                     }
                 }
                 item {
@@ -388,7 +407,7 @@ private fun categoryIcon(name:String):String = when(name) {
                         Spacer(Modifier.height(8.dp))
                         Text("All expenses are saved in the phone's private SQLite database. No login, cloud account, or internet connection is required for everyday use.",color=Soft,fontSize=13.sp)
                         Spacer(Modifier.height(9.dp))
-                        Text("Version 0.2 · Offline voice beta",color=Indigo,fontSize=12.sp)
+                        Text("Version 0.3 · Voice diagnostics",color=Indigo,fontSize=12.sp)
                     }
                 }
             }
